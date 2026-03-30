@@ -8,18 +8,21 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_ENV_FILE = Path(__file__).parent / ".env"
+# Look for .env next to this file first, then fall back to cwd (project root).
+_MODULE_ENV = Path(__file__).parent / ".env"
+_ENV_FILE = str(_MODULE_ENV) if _MODULE_ENV.exists() else ".env"
 
 
 class Settings(BaseSettings):
     """All configuration for the pipeline worker.
 
-    Values are read from environment variables or a .env file located in the
-    same directory as this file.  See .env.example for documentation on each field.
+    Values are read from environment variables or a .env file.
+    Looks for pipeline_worker/.env first, then falls back to .env in cwd.
+    See .env.example for documentation on each field.
     """
 
     model_config = SettingsConfigDict(
-        env_file=str(_ENV_FILE),
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
