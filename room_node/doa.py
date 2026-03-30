@@ -42,6 +42,7 @@ _VENDOR_ID = 0x2886
 _KNOWN_PRODUCT_IDS: tuple[tuple[int, str], ...] = (
     (0x0018, "ReSpeaker USB Mic Array v2.0 (XVF-3000)"),
     (0x0019, "ReSpeaker USB Mic Array v2.0 rev.B (XVF-3000)"),
+    (0x001A, "reSpeaker XVF3800 4-Mic Array"),
     (0x0020, "ReSpeaker Lite (XVF-3800)"),
     (0x002B, "ReSpeaker USB 4-Mic Array (XVF-3800)"),
 )
