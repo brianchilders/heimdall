@@ -91,6 +91,8 @@ class AudioCapture:
         try:
             while True:
                 chunk = self._q.get()
+                if chunk is None:  # sentinel — stop() was called
+                    break
                 utterance = collector.feed(chunk)
                 if utterance is not None:
                     yield utterance
@@ -100,6 +102,7 @@ class AudioCapture:
     def stop(self) -> None:
         """Signal the capture stream to stop."""
         self._stop_stream()
+        self._q.put(None)  # unblock iter_utterances if blocked on queue.get()
 
     # ------------------------------------------------------------------
     # Private
