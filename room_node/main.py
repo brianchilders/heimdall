@@ -1,16 +1,9 @@
 """
-Capture node entry point.
+Room node entry point.
 
-Runs on a Pi 4 (no AI accelerator).  Performs VAD + DOA only — all inference
-(Whisper, emotion, resemblyzer) runs on blackmagic.  Every utterance is shipped
-as a raw audio clip.
-
-Designed to run as a systemd service::
-
-    ExecStart=/usr/bin/python3 /opt/heimdall/capture_node.py
-    Environment=ROOM_NAME=living_room
-    Environment=PIPELINE_URL=http://blackmagic.lan:8001
-    Environment=NODE_PROFILE=capture
+Starts the audio capture loop, runs inference on each utterance, and
+dispatches payloads to the pipeline worker.  Designed to run as a systemd
+service on the Raspberry Pi 5.
 
 Graceful shutdown is handled via SIGTERM (sent by systemd on stop).
 """
@@ -20,10 +13,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sys
 
 from room_node.capture import AudioCapture
 from room_node.config import RoomNodeConfig
 from room_node.doa import DOAReader
+from room_node.hailo_inference import InferenceEngine
 from room_node.sender import PayloadSender
 
 
@@ -35,26 +30,21 @@ def _configure_logging(level: str) -> None:
 
 
 async def run(config: RoomNodeConfig) -> None:
-    """Main async loop: capture → ship raw audio.
-
-    No inference runs locally.  Every utterance is encoded and dispatched
-    immediately to the pipeline worker.
-
-    Args:
-        config: Room node configuration (node_profile must be 'capture').
-    """
+    """Main async loop: capture → infer → send."""
     logger = logging.getLogger(__name__)
-    logger.info(
-        "Capture node starting — room=%s pipeline=%s",
-        config.room_name,
-        config.blackmagic_url,
-    )
+    logger.info("Room node starting — room=%s", config.room_name)
 
     doa_reader = DOAReader()
+    engine = InferenceEngine(
+        hailo_enabled=config.hailo_enabled,
+        whisper_hef=config.hailo_whisper_hef,
+        emotion_hef=config.hailo_emotion_hef,
+        whisper_fallback_model=config.whisper_fallback_model,
+    )
     sender = PayloadSender(
         blackmagic_url=config.blackmagic_url,
         room_name=config.room_name,
-        node_profile="capture",
+        whisper_confidence_threshold=config.whisper_confidence_threshold,
         max_retries=config.http_max_retries,
         retry_backoff_s=config.http_retry_backoff_s,
         sample_rate=config.sample_rate,
@@ -69,35 +59,48 @@ async def run(config: RoomNodeConfig) -> None:
         max_utterance_s=config.max_utterance_s,
     )
 
+    # Run the blocking capture loop in a thread so asyncio stays live
     loop = asyncio.get_event_loop()
     stop_event = asyncio.Event()
 
-    def _handle_sigterm(*_: object) -> None:
+    def _handle_sigterm(*_):
         logger.info("SIGTERM received — shutting down")
         loop.call_soon_threadsafe(stop_event.set)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
 
-    async def _capture_and_ship() -> None:
+    async def _capture_and_process():
         for utterance in capture.iter_utterances():
             if stop_event.is_set():
                 break
 
             doa = doa_reader.read()
-            await sender.send(audio=utterance, doa=doa)
-        # Loop exited (iterator exhausted or stop requested) — unblock run()
-        stop_event.set()
+            result = engine.run(utterance)
 
-    capture_task = asyncio.create_task(_capture_and_ship())
+            if not result.transcript:
+                logger.debug("Empty transcript — skipping utterance")
+                continue
+
+            await sender.send(
+                audio=utterance,
+                transcript=result.transcript,
+                whisper_confidence=result.whisper_confidence,
+                whisper_model=result.whisper_model,
+                doa=doa,
+                emotion_valence=result.emotion_valence,
+                emotion_arousal=result.emotion_arousal,
+                voiceprint=result.voiceprint,
+            )
+
+    capture_task = asyncio.create_task(_capture_and_process())
     await stop_event.wait()
     capture.stop()
     capture_task.cancel()
-    logger.info("Capture node shut down cleanly")
+    logger.info("Room node shut down cleanly")
 
 
 def main() -> None:
-    """Entry point for the capture node service."""
     config = RoomNodeConfig()
     _configure_logging(config.log_level)
     try:

@@ -339,3 +339,132 @@ class TestSend:
         result = await capture_sender.send(audio=make_audio(), doa=90)
         assert result is not None
         assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# PayloadSender — offline queue
+# ---------------------------------------------------------------------------
+
+
+class TestOfflineQueue:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_no_queue_on_success(self, sender):
+        """Successful delivery leaves queue empty."""
+        respx.post("http://blackmagic.test:8001/ingest").mock(return_value=OK_RESPONSE)
+        await sender.send(audio=make_audio(), doa=None, transcript="hi", whisper_confidence=0.9)
+        assert sender.queue_depth == 0
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_enqueues_on_failure(self, sender):
+        """Failed delivery adds the payload to the queue."""
+        import httpx as _httpx
+        respx.post("http://blackmagic.test:8001/ingest").mock(
+            side_effect=_httpx.ConnectError("refused")
+        )
+        result = await sender.send(audio=make_audio(), doa=None, transcript="hi", whisper_confidence=0.9)
+        assert result is None
+        assert sender.queue_depth == 1
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_maxsize_evicts_oldest(self, sender):
+        """When the queue reaches maxsize, the oldest payload is dropped."""
+        import httpx as _httpx
+        sender_small = PayloadSender(
+            blackmagic_url="http://blackmagic.test:8001",
+            room_name="kitchen",
+            node_profile="full",
+            max_retries=1,
+            retry_backoff_s=0.0,
+            queue_maxsize=3,
+        )
+        respx.post("http://blackmagic.test:8001/ingest").mock(
+            side_effect=_httpx.ConnectError("refused")
+        )
+        # Fill queue to maxsize
+        for _ in range(3):
+            await sender_small.send(audio=make_audio(), doa=None, transcript="hi", whisper_confidence=0.9)
+        assert sender_small.queue_depth == 3
+
+        # One more should evict the oldest and still be depth 3
+        await sender_small.send(audio=make_audio(), doa=None, transcript="new", whisper_confidence=0.9)
+        assert sender_small.queue_depth == 3
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_flush_on_reconnect(self, sender):
+        """Queued payloads are delivered when the worker becomes reachable."""
+        import httpx as _httpx
+        route = respx.post("http://blackmagic.test:8001/ingest")
+
+        # First two calls fail — payload is queued
+        route.side_effect = [
+            _httpx.ConnectError("refused"),
+            _httpx.ConnectError("refused"),
+        ]
+        await sender.send(audio=make_audio(), doa=None, transcript="queued", whisper_confidence=0.9)
+        assert sender.queue_depth == 1
+
+        # Worker comes back: next call should flush queued item then deliver new one
+        route.side_effect = None
+        route.mock(return_value=OK_RESPONSE)
+        result = await sender.send(audio=make_audio(), doa=None, transcript="live", whisper_confidence=0.9)
+        assert result is not None
+        assert sender.queue_depth == 0
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_flush_stops_on_mid_queue_failure(self, sender):
+        """Flush aborts at the first failed delivery; remaining items stay queued.
+
+        Uses a sender with max_retries=1 to keep side_effect accounting simple:
+        each failed delivery consumes exactly one side_effect entry.
+        """
+        import httpx as _httpx
+        sender_1retry = PayloadSender(
+            blackmagic_url="http://blackmagic.test:8001",
+            room_name="kitchen",
+            node_profile="full",
+            max_retries=1,
+            retry_backoff_s=0.0,
+        )
+        route = respx.post("http://blackmagic.test:8001/ingest")
+
+        # Two consecutive failures — queue grows to 2.
+        # Each send: no queued items on first, one queued item on second (flush fails).
+        # With max_retries=1 each failed delivery = 1 side_effect consumed.
+        route.side_effect = [
+            _httpx.ConnectError("refused"),   # first send, direct delivery → queued
+            _httpx.ConnectError("refused"),   # second send: flush "first" → fail, abort
+            # queue non-empty → "second" enqueued directly; no more HTTP calls
+        ]
+        await sender_1retry.send(audio=make_audio(), doa=None, transcript="first", whisper_confidence=0.9)
+        await sender_1retry.send(audio=make_audio(), doa=None, transcript="second", whisper_confidence=0.9)
+        assert sender_1retry.queue_depth == 2
+
+        # Worker comes back but only the first queued item succeeds; second fails.
+        route.side_effect = [
+            OK_RESPONSE,                         # flush: "first" succeeds → popped
+            _httpx.ConnectError("refused"),      # flush: "second" fails → abort flush
+            # queue still has "second"; "third" enqueued; no direct delivery attempt
+        ]
+        result = await sender_1retry.send(audio=make_audio(), doa=None, transcript="third", whisper_confidence=0.9)
+        assert result is None
+        # "second" still in queue, "third" newly enqueued
+        assert sender_1retry.queue_depth == 2
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_queue_depth_property(self, sender):
+        """queue_depth reflects current buffered count."""
+        assert sender.queue_depth == 0
+        import httpx as _httpx
+        respx.post("http://blackmagic.test:8001/ingest").mock(
+            side_effect=_httpx.ConnectError("refused")
+        )
+        await sender.send(audio=make_audio(), doa=None, transcript="a", whisper_confidence=0.9)
+        assert sender.queue_depth == 1
+        await sender.send(audio=make_audio(), doa=None, transcript="b", whisper_confidence=0.9)
+        assert sender.queue_depth == 2

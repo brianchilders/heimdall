@@ -4,7 +4,7 @@
 
 `AudioPayload` is the JSON structure posted by every room node to the pipeline
 worker at `POST /ingest`.  It is the single canonical interface between the
-edge (Pi) and the backend (blackmagic.lan).
+room node and the pipeline worker (both running on heimdall, the Pi 5).
 
 Two node profiles share the same schema — fields are optional depending on what
 the node computed locally.
@@ -15,7 +15,7 @@ Defined in: `pipeline_worker/models.py`
 
 ## Node Profiles
 
-| Capability | Full Node (Pi 5 + Hailo-8) | Capture Node (Pi 4) |
+| Capability | Full Node (heimdall Pi 5 + Hailo-8) | Capture Node (additional Pi) |
 |---|---|---|
 | `transcript` | Whisper small/medium output | `null` |
 | `whisper_confidence` | [0, 1] score | `null` |
@@ -96,7 +96,7 @@ All inference fields (`transcript`, `whisper_confidence`, `emotion`,
 ```python
 async def ingest(payload: AudioPayload):
     if payload.node_profile == "capture" or payload.audio_clip_b64:
-        # Run full inference stack on blackmagic
+        # Run full inference stack on the pipeline worker (heimdall)
         transcript, confidence = await whisper_large_v3.transcribe(payload.audio_clip_b64)
         voiceprint = await resemblyzer.embed(payload.audio_clip_b64)
         emotion = await emotion_model.predict(payload.audio_clip_b64)

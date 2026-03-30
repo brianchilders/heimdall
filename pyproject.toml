@@ -1,0 +1,26 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = [
+    "pipeline_worker/tests",
+    "room_node/tests",
+    "enrollment/tests",
+    "memory_extensions/tests",
+]
+markers = [
+    "hardware: requires physical hardware (Pi 5, ReSpeaker USB, Hailo-8) — skip in CI",
+    "integration: requires live external services (memory-mcp, pipeline worker)",
+]
+log_cli = true
+log_cli_level = "INFO"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]

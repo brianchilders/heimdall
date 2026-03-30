@@ -63,6 +63,10 @@ class PayloadSender:
         await sender.send(audio=utterance_array, doa=90)
     """
 
+    # Maximum number of payloads to buffer when the pipeline worker is unreachable.
+    # Oldest entry is evicted when the queue is full.
+    QUEUE_MAXSIZE: int = 50
+
     def __init__(
         self,
         blackmagic_url: str,
@@ -72,6 +76,7 @@ class PayloadSender:
         max_retries: int = 3,
         retry_backoff_s: float = 1.0,
         sample_rate: int = 16000,
+        queue_maxsize: int = 50,
     ) -> None:
         self.blackmagic_url = blackmagic_url.rstrip("/")
         self.room_name = room_name
@@ -80,6 +85,14 @@ class PayloadSender:
         self.max_retries = max_retries
         self.retry_backoff_s = retry_backoff_s
         self.sample_rate = sample_rate
+        self.queue_maxsize = queue_maxsize
+        # In-memory FIFO queue.  Index 0 = oldest (next to deliver).
+        self._queue: list[dict] = []
+
+    @property
+    def queue_depth(self) -> int:
+        """Number of payloads currently buffered in the offline queue."""
+        return len(self._queue)
 
     async def send(
         self,
@@ -93,6 +106,9 @@ class PayloadSender:
         voiceprint: Optional[np.ndarray] = None,
     ) -> Optional[dict]:
         """Package and POST one utterance to the pipeline worker.
+
+        Flushes any queued payloads before attempting the current one.
+        If delivery fails, the current payload is enqueued for the next call.
 
         For full nodes: attaches audio_clip_b64 when whisper_confidence is
         below threshold.  For capture nodes: always attaches audio_clip_b64
@@ -121,11 +137,66 @@ class PayloadSender:
             emotion_arousal=emotion_arousal,
             voiceprint=voiceprint,
         )
-        return await self._post_with_retry(payload)
+
+        # Drain any previously-buffered payloads before attempting the new one.
+        # If flush fails mid-way, the current payload is queued (not lost).
+        flushed = await self._try_flush()
+        if flushed:
+            logger.info("Flushed %d queued payload(s) for room=%s", flushed, self.room_name)
+
+        # If the queue is non-empty after flush, the worker is still unreachable.
+        if self._queue:
+            self._enqueue(payload)
+            logger.warning(
+                "Worker still unreachable — queued payload (depth=%d)", len(self._queue)
+            )
+            return None
+
+        result = await self._post_with_retry(payload)
+        if result is None:
+            self._enqueue(payload)
+            logger.warning(
+                "Delivery failed — payload queued for retry (depth=%d)", len(self._queue)
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
+
+    def _enqueue(self, payload: dict) -> None:
+        """Append payload to the offline queue, evicting the oldest if full.
+
+        Args:
+            payload: JSON-serialisable dict to buffer.
+        """
+        if len(self._queue) >= self.queue_maxsize:
+            dropped = self._queue.pop(0)
+            logger.warning(
+                "Offline queue full (%d) — dropped oldest payload from room=%s ts=%s",
+                self.queue_maxsize,
+                dropped.get("room"),
+                dropped.get("timestamp"),
+            )
+        self._queue.append(payload)
+
+    async def _try_flush(self) -> int:
+        """Attempt to deliver all queued payloads oldest-first.
+
+        Stops at the first failure so payloads are never reordered.
+        Successfully delivered payloads are removed from the queue.
+
+        Returns:
+            Number of payloads successfully delivered.
+        """
+        delivered = 0
+        while self._queue:
+            result = await self._post_with_retry(self._queue[0])
+            if result is None:
+                break
+            self._queue.pop(0)
+            delivered += 1
+        return delivered
 
     def _build_payload(
         self,

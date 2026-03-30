@@ -1,0 +1,34 @@
+# Abstract dependencies — direct requirements only, no transitive pins.
+# Edit THIS file when adding/removing/changing dependencies.
+# Then regenerate the lock file:
+#   pip-compile --generate-hashes requirements.in -o requirements.txt
+#
+# Runtime
+sounddevice>=0.5.1
+numpy>=1.26.0
+httpx>=0.28.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# VAD
+torch>=2.0.0
+torchaudio>=2.0.0
+silero-vad>=5.1
+
+# Transcription fallback (used when HAILO_ENABLED=false or .hef not found)
+faster-whisper>=1.1.0
+
+# Voiceprint embedding (resemblyzer, 256-dim GE2E encoder)
+resemblyzer>=0.1.3
+
+# ReSpeaker USB HID (DOA)
+pyusb>=1.2.1
+
+# Test
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+pytest-mock>=3.14.0
+respx>=0.21.0
+scipy>=1.13.0
+pip-audit>=2.7.0

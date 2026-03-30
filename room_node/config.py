@@ -53,6 +53,7 @@ class RoomNodeConfig(BaseSettings):
     # HTTP
     http_max_retries: int = 3
     http_retry_backoff_s: float = 1.0
+    offline_queue_maxsize: int = 50
 
     # Logging
     log_level: str = "INFO"
