@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Whisper confidence below this → attach audio clip for large-v3 fallback
     whisper_confidence_threshold: float = 0.85
 
+    # Ollama base URL (used by memory-mcp for LLM calls; referenced here for documentation)
+    ollama_base_url: str = "http://blackmagic.lan:11434/v1"
+
     # HuggingFace token for pyannote model (optional; diarization skipped if absent)
     hf_token: str = ""
 
