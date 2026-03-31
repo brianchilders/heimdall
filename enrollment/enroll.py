@@ -26,12 +26,23 @@ import asyncio
 import io
 import logging
 import sys
+import warnings
 import wave
 from pathlib import Path
 from typing import Optional
 
 import httpx
 import numpy as np
+
+# webrtcvad (a resemblyzer dependency) uses pkg_resources which is deprecated in
+# Python 3.13+ setuptools.  Suppress before the import fires — we cannot patch
+# a third-party package.
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated",
+    category=UserWarning,
+    module="webrtcvad",
+)
 
 # resemblyzer is optional — not available in test environments without the package.
 # Importing at module level makes VoiceEncoder and preprocess_wav patchable in tests.
