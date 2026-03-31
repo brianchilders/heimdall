@@ -27,9 +27,18 @@ so that recomputing is always possible without re-recording.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
+
+# webrtcvad (resemblyzer transitive dep) uses pkg_resources deprecated in Python 3.13+.
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated",
+    category=UserWarning,
+    module="webrtcvad",
+)
 
 logger = logging.getLogger(__name__)
 
