@@ -118,9 +118,18 @@ class AudioCapture:
             # indata shape: (frames, channels) — take channel 0 (beamformed)
             self._q.put(indata[:, 0].copy())
 
+        # Resolve device: try name-based lookup first so the correct device is
+        # found regardless of index changes across reboots.
+        device = self.device_index
+        try:
+            device = sd.query_devices("reSpeaker", kind="input")["index"]
+            logger.info("ReSpeaker found by name at device index %d", device)
+        except Exception:
+            logger.info("ReSpeaker name lookup failed — using DEVICE_INDEX=%d", self.device_index)
+
         self._stream = sd.InputStream(
-            device=self.device_index,
-            channels=1,
+            device=device,
+            channels=2,
             samplerate=self.sample_rate,
             blocksize=CHUNK_SAMPLES,
             dtype="float32",
@@ -128,10 +137,10 @@ class AudioCapture:
         )
         self._stream.start()
         logger.info(
-            "Audio stream started — device=%d rate=%d chunk=%dms",
-            self.device_index,
+            "Audio stream started — device=%s rate=%d chunk=%d samples",
+            device,
             self.sample_rate,
-            30,
+            CHUNK_SAMPLES,
         )
 
     def _stop_stream(self) -> None:
