@@ -203,30 +203,37 @@ class MemoryClient:
         self,
         entity_name: str,
         fact: str,
+        entity_type: str = "person",
         category: Optional[str] = None,
         confidence: float = 1.0,
         source: str = "audio_pipeline",
+        meta: Optional[dict] = None,
     ) -> Optional[dict]:
         """Store a fact about an entity (Tier 1).
 
         Args:
             entity_name: Entity this fact is about.
             fact: Natural-language fact string.
+            entity_type: Entity type (default 'person').
             category: Optional taxonomy tag (e.g. 'preference', 'location').
             confidence: Confidence score 0–1.
             source: Data source tag.
+            meta: Optional metadata dict stored on the entity (e.g. enrollment status).
 
         Returns:
             Parsed JSON response or None on error.
         """
         payload: dict[str, Any] = {
             "entity_name": entity_name,
+            "entity_type": entity_type,
             "fact": fact,
             "confidence": confidence,
             "source": source,
         }
         if category:
             payload["category"] = category
+        if meta:
+            payload["meta"] = meta
         return await self._post("/remember", payload)
 
     async def extract_and_remember(

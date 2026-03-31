@@ -45,6 +45,24 @@ class Settings(BaseSettings):
     # Ollama base URL (used by memory-mcp for LLM calls; referenced here for documentation)
     ollama_base_url: str = "http://blackmagic.lan:11434/v1"
 
+    # Speaker encoder backend
+    # Options: resemblyzer (default), ecapa_tdnn, titanet
+    # Switching encoders requires POST /recompute_embeddings (if enrollment audio retained)
+    # or re-enrolling all speakers.
+    speaker_encoder: str = "resemblyzer"
+
+    # PyTorch device for the speaker encoder (ignored for resemblyzer which is CPU-only)
+    # Options: cpu, cuda, cuda:0
+    speaker_encoder_device: str = "cpu"
+
+    # Whether to persist raw enrollment audio for future re-embedding when encoder changes.
+    # Disable to save disk space if re-enrollment from mic is acceptable.
+    store_enrollment_audio: bool = True
+
+    # Pipeline worker URL — used by the enrollment CLI to ship audio for embedding.
+    # The enrollment CLI reads this from its own .env; this field documents the default.
+    pipeline_url: str = "http://localhost:8001"
+
     # HuggingFace token for pyannote model (optional; diarization skipped if absent)
     hf_token: str = ""
 

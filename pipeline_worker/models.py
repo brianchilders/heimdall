@@ -14,6 +14,10 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Default voiceprint dimension for the resemblyzer backend.
+# Full-node payloads that include a pre-computed voiceprint field use this
+# dimension.  The pipeline worker validates against the active encoder's dim
+# internally — not at the wire format level.
 VOICEPRINT_DIM = 256
 
 
@@ -134,10 +138,15 @@ class AudioPayload(BaseModel):
     @field_validator("voiceprint")
     @classmethod
     def validate_voiceprint_dim(cls, v: Optional[list[float]]) -> Optional[list[float]]:
-        """Reject embeddings that are not exactly VOICEPRINT_DIM floats."""
-        if v is not None and len(v) != VOICEPRINT_DIM:
+        """Reject obviously wrong voiceprint lengths (must be 64–1024 floats).
+
+        The exact dimension depends on the active speaker encoder backend
+        (256 for resemblyzer, 192 for ecapa_tdnn/titanet).  Validation against
+        the encoder's specific dimension is done inside the pipeline worker.
+        """
+        if v is not None and not (64 <= len(v) <= 1024):
             raise ValueError(
-                f"voiceprint must be {VOICEPRINT_DIM}-dimensional, got {len(v)}"
+                f"voiceprint length {len(v)} is outside the expected range [64, 1024]"
             )
         return v
 
@@ -205,3 +214,52 @@ class PipelineResponse(BaseModel):
         default_factory=list,
         description="Informational flags: 'probable_match', 'fallback_transcription_used', etc.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Enrollment API models
+# ---------------------------------------------------------------------------
+
+
+class EnrollRequest(BaseModel):
+    """Request body for POST /enroll.
+
+    The pipeline worker computes the embedding using its configured
+    SpeakerEncoder backend, so the caller only needs to supply raw audio.
+    Audio is base64-encoded 16kHz mono PCM WAV (same format as audio_clip_b64).
+    """
+
+    entity_name: str = Field(..., description="Speaker name to enroll, e.g. 'Brian'")
+    audio_b64: str = Field(
+        ...,
+        description="Base64-encoded mono 16kHz PCM WAV of the enrollment recording",
+    )
+    sample_rate: int = Field(
+        default=16000,
+        description="Audio sample rate (must be 16000)",
+    )
+    room: Optional[str] = Field(
+        default=None,
+        description="Room where enrollment was recorded (metadata only)",
+    )
+
+    @field_validator("audio_b64")
+    @classmethod
+    def validate_audio_b64(cls, v: str) -> str:
+        """Reject values that are not valid base64."""
+        try:
+            base64.b64decode(v, validate=True)
+        except Exception as exc:
+            raise ValueError("audio_b64 must be valid base64") from exc
+        return v
+
+
+class EnrollResponse(BaseModel):
+    """Response returned by POST /enroll."""
+
+    ok: bool = True
+    entity_name: str
+    encoder: str = Field(..., description="Backend used to compute the embedding")
+    embedding_norm: float = Field(..., description="L2 norm of the stored embedding (should be ~1.0)")
+    audio_stored: bool = Field(..., description="Whether the raw audio was retained for re-embedding")
+    sample_count: int = Field(..., description="Total enrollment samples stored for this entity")

@@ -1,8 +1,12 @@
 """
 Speaker enrollment CLI.
 
-Records audio (or loads a WAV file), computes a 256-dim resemblyzer
-voiceprint embedding, and registers the speaker in memory-mcp.
+Ships raw audio to the pipeline worker POST /enroll endpoint.  The pipeline
+worker computes the embedding using its configured SpeakerEncoder backend and
+stores both the embedding and the raw audio (for future re-embedding).
+
+This decouples the enrollment CLI from any specific embedding model — the
+pipeline worker is the single source of truth for which encoder is active.
 
 Usage
 -----
@@ -34,9 +38,8 @@ from typing import Optional
 import httpx
 import numpy as np
 
-# webrtcvad (a resemblyzer dependency) uses pkg_resources which is deprecated in
-# Python 3.13+ setuptools.  Suppress before the import fires — we cannot patch
-# a third-party package.
+# webrtcvad (a resemblyzer transitive dependency) uses pkg_resources which is
+# deprecated in Python 3.13+ setuptools.  Suppress before any import fires.
 warnings.filterwarnings(
     "ignore",
     message="pkg_resources is deprecated",
@@ -44,18 +47,9 @@ warnings.filterwarnings(
     module="webrtcvad",
 )
 
-# resemblyzer is optional — not available in test environments without the package.
-# Importing at module level makes VoiceEncoder and preprocess_wav patchable in tests.
-try:
-    from resemblyzer import VoiceEncoder, preprocess_wav
-except ImportError:  # pragma: no cover
-    VoiceEncoder = None  # type: ignore[assignment,misc]
-    preprocess_wav = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-VOICEPRINT_DIM = 256
 MIN_AUDIO_S = 3.0  # minimum recording duration for a reliable embedding
 
 
@@ -76,21 +70,28 @@ async def _dispatch(args: argparse.Namespace) -> None:
     import os
     load_dotenv()
 
+    pipeline_url = os.getenv("PIPELINE_URL", "http://localhost:8001")
     memory_mcp_url = os.getenv("MEMORY_MCP_URL", "http://memory-mcp:8900")
     memory_mcp_token = os.getenv("MEMORY_MCP_TOKEN", "")
     device_index = int(os.getenv("DEVICE_INDEX") or 0)
 
-    headers: dict[str, str] = {}
+    mcp_headers: dict[str, str] = {}
     if memory_mcp_token:
-        headers["Authorization"] = f"Bearer {memory_mcp_token}"
+        mcp_headers["Authorization"] = f"Bearer {memory_mcp_token}"
 
-    async with httpx.AsyncClient(base_url=memory_mcp_url, timeout=30.0, headers=headers) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         if args.command == "enroll":
-            await cmd_enroll(client, args, device_index)
+            await cmd_enroll(client, args, device_index, pipeline_url)
         elif args.command == "list":
-            await cmd_list(client)
+            async with httpx.AsyncClient(
+                base_url=memory_mcp_url, timeout=30.0, headers=mcp_headers
+            ) as mcp:
+                await cmd_list(mcp)
         elif args.command == "unknown":
-            await cmd_unknown(client)
+            async with httpx.AsyncClient(
+                base_url=memory_mcp_url, timeout=30.0, headers=mcp_headers
+            ) as mcp:
+                await cmd_unknown(mcp)
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +103,19 @@ async def cmd_enroll(
     client: httpx.AsyncClient,
     args: argparse.Namespace,
     device_index: int,
+    pipeline_url: str,
 ) -> None:
-    """Enroll a speaker from mic or WAV file."""
+    """Enroll a speaker by shipping audio to the pipeline worker /enroll endpoint.
+
+    The pipeline worker computes the embedding using its configured encoder
+    (SPEAKER_ENCODER setting) and stores both the voiceprint and raw audio.
+
+    Args:
+        client: httpx client (used for pipeline worker requests).
+        args: Parsed CLI arguments.
+        device_index: Default sounddevice device index.
+        pipeline_url: Pipeline worker base URL.
+    """
     name: str = args.name
     room: Optional[str] = getattr(args, "room", None)
     duration: float = getattr(args, "duration", 10.0)
@@ -128,41 +140,42 @@ async def cmd_enroll(
         )
         sys.exit(1)
 
-    # --- Compute embedding ---
-    print("  Computing voiceprint embedding...")
-    embedding = compute_embedding(audio)
-    if embedding is None:
-        print("ERROR: Failed to compute voiceprint embedding.", file=sys.stderr)
-        sys.exit(1)
-    print(f"  Embedding computed (norm={float(np.linalg.norm(embedding)):.4f})")
+    # --- Encode audio as base64 WAV ---
+    print("  Encoding audio...")
+    audio_b64 = _audio_to_wav_b64(audio, SAMPLE_RATE)
 
-    # --- Register entity in memory-mcp ---
-    print(f"  Registering entity '{name}' in memory-mcp...")
-    entity_result = await _ensure_entity(client, name, entity_type="person")
-    if entity_result is None:
-        print("ERROR: Failed to create entity in memory-mcp.", file=sys.stderr)
+    # --- Ship to pipeline worker /enroll ---
+    print(f"  Sending to pipeline worker ({pipeline_url})...")
+    try:
+        response = await client.post(
+            f"{pipeline_url}/enroll",
+            json={
+                "entity_name": name,
+                "audio_b64": audio_b64,
+                "sample_rate": SAMPLE_RATE,
+                "room": room,
+            },
+        )
+        response.raise_for_status()
+        result = response.json()
+    except httpx.HTTPStatusError as exc:
+        print(
+            f"ERROR: Pipeline worker returned {exc.response.status_code}: "
+            f"{exc.response.text[:200]}",
+            file=sys.stderr,
+        )
         sys.exit(1)
-
-    # --- Store voiceprint ---
-    print("  Storing voiceprint embedding...")
-    vp_result = await _update_voiceprint(client, name, embedding)
-    if vp_result is None:
-        print("ERROR: Failed to store voiceprint in memory-mcp.", file=sys.stderr)
+    except httpx.RequestError as exc:
+        print(f"ERROR: Could not reach pipeline worker at {pipeline_url}: {exc}", file=sys.stderr)
         sys.exit(1)
 
     # --- Confirm ---
-    profile = await _get_profile(client, name)
-    if isinstance(profile, dict):
-        meta = (profile.get("result") or {}).get("meta") or {}
-        if not meta and isinstance(profile.get("meta"), dict):
-            meta = profile["meta"]
-        sample_count = meta.get("voiceprint_samples", 1)
-        print(f"\nEnrolled: {name}")
-        print(f"  Room     : {room or 'not specified'}")
-        print(f"  Samples  : {sample_count}")
-        print(f"  Status   : {meta.get('status', 'enrolled')}")
-    else:
-        print(f"\nEnrolled: {name} (voiceprint stored successfully)")
+    print(f"\nEnrolled: {result.get('entity_name', name)}")
+    print(f"  Encoder  : {result.get('encoder', '?')}")
+    print(f"  Room     : {room or 'not specified'}")
+    print(f"  Samples  : {result.get('sample_count', '?')}")
+    print(f"  Norm     : {result.get('embedding_norm', 0.0):.4f}")
+    print(f"  Audio    : {'stored' if result.get('audio_stored') else 'not stored'}")
 
 
 async def cmd_list(client: httpx.AsyncClient) -> None:
@@ -186,14 +199,15 @@ async def cmd_list(client: httpx.AsyncClient) -> None:
         return
 
     print(f"\nEnrolled speakers ({len(enrolled)}):")
-    print(f"  {'Name':<20} {'Samples':>8}  {'First seen'}")
-    print(f"  {'-'*20} {'-'*8}  {'-'*24}")
+    print(f"  {'Name':<20} {'Encoder':<12} {'Samples':>8}  {'First seen'}")
+    print(f"  {'-'*20} {'-'*12} {'-'*8}  {'-'*24}")
     for e in enrolled:
         meta = e.get("meta") or {}
         name = e.get("name", "?")
+        encoder = meta.get("speaker_encoder", "resemblyzer")
         samples = meta.get("voiceprint_samples", "?")
         first_seen = meta.get("first_seen", "unknown")
-        print(f"  {name:<20} {str(samples):>8}  {first_seen}")
+        print(f"  {name:<20} {encoder:<12} {str(samples):>8}  {first_seen}")
 
 
 async def cmd_unknown(client: httpx.AsyncClient) -> None:
@@ -235,7 +249,7 @@ def record_audio(duration_s: float, device_index: int = 0) -> np.ndarray:
 
     Args:
         duration_s: Recording duration in seconds.
-        device_index: sounddevice device index.
+        device_index: sounddevice device index fallback.
 
     Returns:
         float32 mono array normalised to [-1, 1].
@@ -315,7 +329,7 @@ def load_wav(path: str) -> np.ndarray:
     else:
         raise ValueError(f"Unsupported sample width: {sample_width} bytes")
 
-    # Convert stereo to mono
+    # Convert to mono
     if n_channels == 2:
         samples = samples.reshape(-1, 2).mean(axis=1)
     elif n_channels > 2:
@@ -337,129 +351,29 @@ def load_wav(path: str) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Voiceprint computation
+# Audio encoding
 # ---------------------------------------------------------------------------
 
 
-def compute_embedding(audio: np.ndarray) -> Optional[np.ndarray]:
-    """Compute a 256-dim resemblyzer voiceprint embedding.
+def _audio_to_wav_b64(audio: np.ndarray, sample_rate: int) -> str:
+    """Encode a float32 mono array as a base64 16-bit PCM WAV string.
 
     Args:
-        audio: float32 mono array at SAMPLE_RATE Hz.
+        audio: float32 mono array normalised to [-1.0, 1.0].
+        sample_rate: Audio sample rate.
 
     Returns:
-        Unit-norm float32 array of shape (256,), or None on failure.
+        Base64-encoded WAV string compatible with pipeline worker /enroll.
     """
-    if VoiceEncoder is None or preprocess_wav is None:
-        raise ImportError(
-            "resemblyzer is required for voiceprint computation. "
-            "Install with: pip install resemblyzer"
-        )
-    try:
-        encoder = VoiceEncoder()
-        wav = preprocess_wav(audio, source_sr=SAMPLE_RATE)
-        embedding = encoder.embed_utterance(wav).astype(np.float32)
-        norm = float(np.linalg.norm(embedding))
-        if norm == 0.0:
-            return None
-        return embedding / norm
-    except Exception as exc:
-        logger.error("Embedding computation failed: %s", exc)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# memory-mcp API helpers
-# ---------------------------------------------------------------------------
-
-
-async def _ensure_entity(
-    client: httpx.AsyncClient,
-    name: str,
-    entity_type: str = "person",
-) -> Optional[dict]:
-    """Create or update a person entity in memory-mcp.
-
-    Uses POST /remember to ensure the entity exists (memory-mcp creates the
-    entity automatically when a fact is stored for a new entity name).
-
-    Args:
-        client: Authenticated httpx client.
-        name: Entity name to create/confirm.
-        entity_type: Entity type string.
-
-    Returns:
-        Response dict or None on failure.
-    """
-    try:
-        response = await client.post(
-            "/remember",
-            json={
-                "entity_name": name,
-                "entity_type": entity_type,
-                "fact": f"{name} is an enrolled speaker in the Heimdall audio pipeline.",
-                "category": "enrollment",
-                "source": "enrollment_cli",
-                "meta": {"status": "enrolled"},
-            },
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as exc:
-        logger.error("Failed to ensure entity '%s': %s", name, exc)
-        return None
-
-
-async def _update_voiceprint(
-    client: httpx.AsyncClient,
-    name: str,
-    embedding: np.ndarray,
-) -> Optional[dict]:
-    """POST the voiceprint embedding to memory-mcp /voices/update_print.
-
-    Args:
-        client: Authenticated httpx client.
-        name: Entity name.
-        embedding: 256-dim float32 unit-norm array.
-
-    Returns:
-        Response dict or None on failure.
-    """
-    try:
-        response = await client.post(
-            "/voices/update_print",
-            json={
-                "entity_name": name,
-                "embedding": embedding.tolist(),
-                "weight": 1.0,  # first enrollment — take the new embedding fully
-            },
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as exc:
-        logger.error("Failed to update voiceprint for '%s': %s", name, exc)
-        return None
-
-
-async def _get_profile(
-    client: httpx.AsyncClient,
-    name: str,
-) -> Optional[dict]:
-    """GET entity profile for confirmation display.
-
-    Args:
-        client: Authenticated httpx client.
-        name: Entity name.
-
-    Returns:
-        Profile dict or None if not found.
-    """
-    try:
-        response = await client.get(f"/profile/{name}")
-        response.raise_for_status()
-        return response.json()
-    except Exception:
-        return None
+    import base64
+    buf = io.BytesIO()
+    pcm = np.clip(audio, -1.0, 1.0)
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes((pcm * 32767).astype(np.int16).tobytes())
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 # ---------------------------------------------------------------------------
