@@ -239,15 +239,31 @@ def record_audio(duration_s: float, device_index: int = 0) -> np.ndarray:
             "Install with: pip install sounddevice"
         ) from exc
 
+    # Auto-detect ReSpeaker by name so the correct device is used regardless
+    # of index changes across reboots.  Falls back to device_index if not found.
+    try:
+        device = sd.query_devices("reSpeaker", kind="input")["index"]
+    except Exception:
+        device = device_index
+
+    # Query the device to determine how many input channels it supports.
+    # The ReSpeaker XVF3800 requires 2 channels; standard mics use 1.
+    try:
+        dev_info = sd.query_devices(device, kind="input")
+        channels = min(2, int(dev_info["max_input_channels"]))
+    except Exception:
+        channels = 1
+
     n_samples = int(duration_s * SAMPLE_RATE)
     recording = sd.rec(
         n_samples,
         samplerate=SAMPLE_RATE,
-        channels=1,
+        channels=channels,
         dtype="float32",
-        device=device_index,
+        device=device,
     )
     sd.wait()
+    # Always return mono — take channel 0 (beamformed output on ReSpeaker)
     return recording[:, 0]
 
 
