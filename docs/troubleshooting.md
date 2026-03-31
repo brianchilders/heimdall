@@ -121,6 +121,23 @@ Use the number in brackets at the start of the ReSpeaker line as `DEVICE_INDEX` 
 
 ---
 
+## ReSpeaker — sounddevice Callback Never Fires (Device Shows 0 in)
+
+**Symptom:** `sounddevice.query_devices()` shows `(0 in, 2 out)` for the ReSpeaker, audio stream appears to start but VAD never triggers, `arecord` returns `read error: Input/output error`.
+
+**Cause:** The ReSpeaker is connected through a USB 2.0 hub or USB 2.0 port. The `0 in` means ALSA cannot open the capture interface — same root cause as the I/O error above.
+
+**Fix:** Plug the ReSpeaker directly into a **blue USB 3.0 port** on the Pi, bypassing any hub. The ReSpeaker draws minimal power and does not need a hub.
+
+**Verify:**
+```bash
+arecord -D hw:1,0 -f S16_LE -r 16000 -c 2 -d 3 /tmp/test.wav && echo "OK"
+python3 -c "import sounddevice; print(sounddevice.query_devices())"
+# Should show (2 in, 2 out) for the ReSpeaker
+```
+
+---
+
 ## Python Version — torch/torchaudio CUDA Error on Pi
 
 **Symptom:**
