@@ -1,0 +1,32 @@
+[
+  {
+    "tier": "semantic",
+    "content": "Brian prefers oat milk in his coffee.",
+    "metadata": {"who": "Brian", "tags": ["food", "preference"]},
+    "source": "test"
+  },
+  {
+    "tier": "episodic",
+    "content": "Brian mentioned he has a dentist appointment on Friday.",
+    "metadata": {"who": "Brian", "tags": ["health", "appointment"]},
+    "source": "test"
+  },
+  {
+    "tier": "timeseries",
+    "content": "Living room temperature: 21.5°C",
+    "metadata": {"location": "living_room", "unit": "celsius"},
+    "source": "test"
+  },
+  {
+    "tier": "pattern",
+    "content": "Brian typically leaves for school dropoff at 7:45am on weekdays.",
+    "metadata": {"who": "Brian", "tags": ["routine", "morning"]},
+    "source": "test"
+  },
+  {
+    "tier": "semantic",
+    "content": "The wifi password for the guest network is stored in the kitchen drawer.",
+    "metadata": {"tags": ["household", "wifi"]},
+    "source": "test"
+  }
+]
