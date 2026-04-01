@@ -2,6 +2,7 @@
 members = [
     "nornir",
     "muninn",
+    "verdandi",
 ]
 
 [tool.uv]
@@ -18,6 +19,7 @@ asyncio_mode = "auto"
 testpaths = [
     "nornir/tests",
     "muninn/tests",
+    "verdandi/tests",
     "pipeline_worker/tests",
     "room_node/tests",
     "enrollment/tests",

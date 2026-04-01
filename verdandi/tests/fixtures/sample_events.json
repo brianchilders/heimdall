@@ -1,0 +1,32 @@
+[
+  {
+    "who": "Brian",
+    "transcript": "I need to remember to pick up the kids from school at 3pm",
+    "emotion": "neutral",
+    "location": "kitchen",
+    "local_time": "2026-04-01T08:30:00",
+    "speaker_confidence": 0.92,
+    "objects_visible": ["coffee_mug", "laptop"],
+    "activity": "morning_routine"
+  },
+  {
+    "who": "Brian",
+    "transcript": "Hey can you turn on the lights in the living room",
+    "emotion": "neutral",
+    "location": "hallway",
+    "local_time": "2026-04-01T19:00:00",
+    "speaker_confidence": 0.88,
+    "objects_visible": [],
+    "activity": null
+  },
+  {
+    "who": "Aria",
+    "transcript": "What's for dinner tonight",
+    "emotion": "happy",
+    "location": "kitchen",
+    "local_time": "2026-04-01T17:30:00",
+    "speaker_confidence": 0.95,
+    "objects_visible": ["refrigerator"],
+    "activity": null
+  }
+]
